@@ -15,6 +15,7 @@ from .executor import (
     parsl_executor,
     run_uproot_job,
     run_parsl_job,
+    run_funcx_job,
     run_spark_job
 )
 from .accumulator import (

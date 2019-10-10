@@ -25,7 +25,7 @@ from .dataframe import (
     LazyDataFrame,
 )
 from ..nanoaod import NanoEvents
-from ..util import _hash
+from ..util import _hash, load
 
 try:
     from collections.abc import Mapping, Sequence
@@ -800,6 +800,79 @@ def run_uproot_job(fileset,
         return out, wrapped_out['metrics']
     return out
 
+def run_funcx_job(endpoints, fileset, treename, processor, executor, stageout_url, executor_args={}, chunksize=500000,
+        chunking_timeout=10):
+    '''
+    A convenience wrapper to submit jobs for a file, which is a
+    dictionary of dataset: [file list] entries. In this case using parsl.
+    Supports only uproot reading, via the LazyDataFrame class.
+    For more customized processing,
+    e.g. to read other objects from the files and pass them into data frames,
+    one can write a similar function in their user code.
+
+    Parameters
+    ----------
+        fileset:
+            dictionary {dataset: [file, file], }
+        treename:
+            name of tree inside each root file
+        processor_instance:
+            an instance of a class deriving from ProcessorABC
+        executor:
+            anything that inherits from `ParslExecutor` like `parsl_executor`
+
+            In general, a function that takes 3 arguments: items, function accumulator
+            and performs some action equivalent to:
+            for item in items: accumulator += function(item)
+        executor_args:
+            extra arguments to pass to executor
+        chunksize:
+            number of entries to process at a time in the data frame
+    '''
+
+    try:
+        import funcx
+    except ImportError as e:
+        print('you must have funcx installed to call run_funcx_job()!')
+        raise e
+
+    print('funcx version:', funcx.__version__)
+
+    from .funcx.executor import FuncXExecutor
+    from .funcx.detail import get_chunking
+
+    processor_instance = load(processor)
+
+    if not isinstance(fileset, Mapping):
+        raise ValueError("Expected fileset to be a mapping dataset: list(files)")
+    if not isinstance(processor_instance, ProcessorABC):
+        raise ValueError("Expected processor_instance to derive from ProcessorABC")
+    if not isinstance(executor, FuncXExecutor):
+        raise ValueError("Expected executor to derive from FuncXExecutor")
+
+    tn = treename
+    to_chunk = []
+    for dataset, filelist in fileset.items():
+        if isinstance(filelist, dict):
+            tn = filelist['treename'] if 'treename' in filelist else tn
+            filelist = filelist['files']
+        if not isinstance(filelist, list):
+            raise ValueError('list of filenames in fileset must be a list or a dict')
+        if not isinstance(tn, str):
+            tn = tuple(treename)
+        for afile in filelist:
+            to_chunk.append((dataset, afile, tn))
+
+    items = get_chunking(to_chunk, chunksize, endpoints, timeout=chunking_timeout)
+
+    output = processor_instance.accumulator.identity()
+    executor(items, processor, output, endpoints, stageout_url, **executor_args)
+    processor_instance.postprocess(output)
+
+    # if killParsl:
+    #     _parsl_stop()
+
+    return output
 
 def run_parsl_job(fileset, treename, processor_instance, executor, executor_args={}, chunksize=200000):
     '''A wrapper to submit parsl jobs
