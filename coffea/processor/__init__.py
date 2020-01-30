@@ -13,6 +13,7 @@ from .executor import (
     futures_executor,
     dask_executor,
     parsl_executor,
+    funcx_executor,
     run_uproot_job,
     run_parsl_job,
     run_funcx_job,

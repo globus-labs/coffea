@@ -59,10 +59,13 @@ class FuncXExecutor(object):
             path = os.path.basename(result)
             if local_path is not None:
                 path = os.path.join(local_path, path)
-                blob, nevents, dataset = load(path)
+                try:
+                    blob, nevents, dataset = load(path)
+                    os.unlink(path)
+                except FileNotFoundError:
+                    print('could not find output for {}-- skipping it'.format(path))
             else:
                 print('copying from stageout location')
-                command = 'xrdcp {} .'.format(result)
                 subprocess.call(command, shell=True)
                 blob, nevents, dataset = load(path)
                 os.unlink(path)
@@ -74,7 +77,7 @@ class FuncXExecutor(object):
             # command = 'xrdfs rm {}'.format(result)
             # subprocess.call(command, shell=True)
 
-        _futures_handler(futures, (output, self._counts), status, unit, desc, accumulator)
+        _futures_handler(futures, (output, self._counts), status, unit, desc, accumulator, timeout)
 
 
 funcx_executor = FuncXExecutor()

@@ -25,7 +25,7 @@ from .dataframe import (
     LazyDataFrame,
 )
 from ..nanoaod import NanoEvents
-from ..util import _hash, load
+from ..util import _hash, save, load
 
 try:
     from collections.abc import Mapping, Sequence
@@ -35,6 +35,7 @@ except ImportError:
 
 _PICKLE_PROTOCOL = pickle.HIGHEST_PROTOCOL
 DEFAULT_METADATA_CACHE = LRUCache(100000)
+
 
 
 # instrument xrootd source
@@ -184,15 +185,26 @@ def _futures_handler(futures_set, output, status, unit, desc, add_fn, tailtimeou
     start = time.time()
     last_job = start
     try:
+        futures_set = set(list(futures_set))
         with tqdm(disable=not status, unit=unit, total=len(futures_set), desc=desc) as pbar:
             while len(futures_set) > 0:
-                finished = set(job for job in futures_set if job.done())
+                # needed for funcX, because polling period is slow
+                finished = set()
+                for job in futures_set:
+                    if job.done():
+                        finished.add(job)
+                    if len(finished) > 10:
+                        break
+                # finished = set(job for job in futures_set if job.done())
                 futures_set.difference_update(finished)
                 while finished:
-                    add_fn(output, finished.pop().result())
+                    # FIXME AW benchmarking
+                    f = finished.pop()
+                    add_fn(output, (f.result(), f.submitted, f.returned, f.connected_managers))
+                    # add_fn(output, finished.pop().result())
                     pbar.update(1)
                     last_job = time.time()
-                time.sleep(0.5)
+                # time.sleep(0.5)
                 if tailtimeout is not None and (time.time() - last_job) > tailtimeout and (last_job - start) > 0:
                     njobs = len(futures_set)
                     for job in futures_set:
@@ -529,6 +541,10 @@ def _work_function(item, processor_instance, flatten=False, savemetrics=False,
                 metrics['columns'] = set_accumulator(df.materialized)
                 metrics['entries'] = value_accumulator(int, df.size)
                 metrics['processtime'] = value_accumulator(float, toc - tic)
+                # FIXME AW benchmarking
+                # import subprocess
+                # hostname = subprocess.check_output('hostname', shell=True).strip().decode()
+                # metrics['hostname'] = dict_accumulator({hostname: value_accumulator(int, 1)})
             wrapped_out = dict_accumulator({'out': out, 'metrics': metrics})
             file.source.close()
             break
@@ -555,6 +571,7 @@ def _work_function(item, processor_instance, flatten=False, savemetrics=False,
                 metrics['columns'] = set_accumulator({})
                 metrics['entries'] = value_accumulator(int, 0)
                 metrics['processtime'] = value_accumulator(float, 0)
+                metrics['skippedbadfiles'] = value_accumulator(int, 1)
             wrapped_out = dict_accumulator({'out': out, 'metrics': metrics})
         except Exception as e:
             if retries == retry_count:
@@ -726,8 +743,18 @@ def run_uproot_job(fileset,
                 'tailtimeout': None,
                 'worker_affinity': False,
             }
+<<<<<<< HEAD
             pre_args.update(pre_arg_override)
             executor(to_get, metadata_fetcher, out, **pre_args)
+=======
+            real_pre_args.update(pre_args)
+            partial_meta = partial(_get_metadata,
+                                   skipbadfiles=skipbadfiles,
+                                   retries=retries,
+                                   xrootdtimeout=xrootdtimeout,
+                                   )
+            pre_executor(to_get, partial_meta, out, **real_pre_args)
+>>>>>>> WIP
             while out:
                 item = out.pop()
                 metadata_cache[item] = item.metadata
@@ -830,6 +857,8 @@ def run_funcx_job(endpoints, fileset, treename, processor, executor, stageout_ur
             number of entries to process at a time in the data frame
     '''
 
+    import subprocess
+
     try:
         import funcx
     except ImportError as e:
@@ -842,6 +871,11 @@ def run_funcx_job(endpoints, fileset, treename, processor, executor, stageout_ur
     from .funcx.detail import get_chunking
 
     processor_instance = load(processor)
+
+    command = 'xrdcp {}/processor {}'.format(stageout_url, processor)
+    result = subprocess.call(command, shell=True)
+    if result == 52:
+        print('recycling existing processor') # FIXME need to support multiple processors
 
     if not isinstance(fileset, Mapping):
         raise ValueError("Expected fileset to be a mapping dataset: list(files)")
@@ -869,10 +903,167 @@ def run_funcx_job(endpoints, fileset, treename, processor, executor, stageout_ur
     executor(items, processor, output, endpoints, stageout_url, **executor_args)
     processor_instance.postprocess(output)
 
-    # if killParsl:
-    #     _parsl_stop()
-
     return output
+
+
+def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=None,
+        local_path=None, status=True, unit='items', desc='Processing', compression=1, tailtimeout=None,
+        poll_period=0.1, submission_retries=3, jitter_interval=200, **kwargs):
+    """Execute using funcX
+
+    Parameters
+    ----------
+        items : list
+            List of input arguments
+        function : callable
+            A function to be called on each input, which returns an accumulator instance
+        accumulator : AccumulatorABC
+            An accumulator to collect the output of the function
+        status : bool
+            If true (default), enable progress bar
+        unit : str
+            Label of progress bar unit
+        desc : str
+            Label of progress bar description
+        compression : int, optional
+            Compress accumulator outputs in flight with LZ4, at level specified (default 1)
+            Set to ``None`` for no compression.
+        tailtimeout : int, optional
+            Timeout requirement on job tails. Cancel all remaining jobs if none have finished
+            in the timeout window.
+    """
+    if len(items) == 0:
+        return accumulator
+
+    import os
+    import subprocess
+    from itertools import cycle
+    import numpy as np
+
+    from coffea.processor.funcx.detail import get_funcx_future
+
+    try:
+        import funcx
+    except ImportError as e:
+        print('you must have funcx installed to call run_funcx_job()!')
+        raise e
+
+    print('funcx version:', funcx.__version__)
+
+    # FIXME AW benchmarking
+    import sqlite3
+    db = sqlite3.connect('coffea.db')
+    db.execute("""create table if not exists tasks(
+        tag text,
+        returned int,
+        submitted int,
+        added int,
+        task_id int,
+        connected_managers int,
+        entries int,
+        hostname text,
+        processtime real,
+        concurrent_analyses int
+        )""")
+    db.close()
+    kwargs = function.keywords
+    processor_instance = kwargs.pop('processor_instance')
+
+    # FIXME need to support multiple processors
+    if stageout_url.startswith('root://'):
+        save(processor_instance, 'processor.coffea')
+        command = 'xrdcp processor.coffea {}/processor.coffea'.format(stageout_url)
+        result = subprocess.call(command, shell=True)
+        print('staged processor: {}'.format(result))
+        if result == 52:
+            print('recycling existing processor')
+    elif stageout_url.startswith('file://'):
+        path = os.path.join(stageout_url.replace('file://', ''), 'processor.coffea')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        save(processor_instance, path)
+    else:
+        raise NotImplementedError('Only file and xrootd stageout supported')
+
+    for i in range(100):
+        os.makedirs(os.path.join(local_path, str(i)), exist_ok=True)
+
+    def add_fn(output, result):
+        result, submitted, returned, connected_managers = result # FIXME AW benchmarking
+        if local_path is not None:
+            path = os.path.join(local_path, result)
+            if path.endswith('.err'):
+                print('skipping error file: {}'.format(path))
+                return
+            try:
+                result = load(path)
+                # FIXME AW benchmarking
+                # result = _maybe_decompress(result)
+                # update += [
+                #     (os.environ.get('tag', 'coffea'),
+                #     returned,
+                #     submitted,
+                #     connected_managers,
+                #     result['metrics']['entries'].value,
+                #     result['metrics']['hostname'],
+                #     result['metrics']['processtime'].value,
+                #     os.environ.get('concurrent_analyses', 1),
+                #     time.time())
+                # ]
+                os.unlink(path)
+            except FileNotFoundError:
+                print('could not find output for {}-- skipping it'.format(path))
+                return
+            except EOFError:
+                print('caught EOFError for {}-- skipping it'.format(path))
+                return
+            except OSError:
+                print('caught OSError for {}-- skipping it'.format(path))
+                return
+        else:
+            raise NotImplementedError
+
+        output += _maybe_decompress(result)
+
+    futures = set()
+    endpoint = cycle(endpoints)
+
+    from datetime import datetime
+    print('[{}] starting submission'.format(datetime.now().strftime("%H:%M:%S")))
+    for index, item in enumerate(items):
+        if index % jitter_interval == 0:
+            time.sleep(np.random.uniform(0.1, 2))
+        payload = [
+            (item.dataset, item.filename, item.treename, item.chunksize, item.index),
+            stageout_url
+        ]
+        for _ in range(submission_retries):
+            try:
+                futures.add(get_funcx_future(payload, next(endpoint), 'process', poll_period, **kwargs))
+                break
+            except Exception as e:
+                print('caught exception: {}'.format(e))
+                time.sleep(6)
+
+    print('[{}] finished submission'.format(datetime.now().strftime("%H:%M:%S")))
+    _futures_handler(futures, accumulator, status, unit, desc, add_fn, tailtimeout)
+
+    # db = sqlite3.connect('coffea.db')
+    # db.executemany("""insert into tasks(
+    #     tag,
+    #     returned,
+    #     submitted,
+    #     connected_managers,
+    #     entries,
+    #     processtime,
+    #     concurrent_analyses,
+    #     added
+    #     )
+    #     values (?, ?, ?, ?, ?, ?, ?, ?)""", update)
+    # db.commit()
+    # db.close()
+
+    return accumulator
+
 
 def run_parsl_job(fileset, treename, processor_instance, executor, executor_args={}, chunksize=200000):
     '''A wrapper to submit parsl jobs

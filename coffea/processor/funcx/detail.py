@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import time
+import sqlite3
 
 from concurrent.futures import Future
 import multiprocessing
@@ -27,7 +28,7 @@ try:
 except ImportError:
     from collections import Sequence
 
-with open(os.path.join(os.path.dirname(__file__), 'function_uuids.json')) as f:
+with open(os.path.join(os.path.dirname(__file__), 'data', 'function_uuids.json')) as f:
     function_uuids = json.load(f)
 
 
@@ -39,24 +40,29 @@ class FuncXFuture(Future):
     client = FuncXClient()
     serializer = FuncXSerializer()
 
-    def __init__(self, task_id, poll_period=0.1):
+    def __init__(self, task_id, poll_period=1):
         super().__init__()
         self.task_id = task_id
         self.poll_period = poll_period
         self.__result = None
+        self.submitted = time.time()
 
     def done(self):
         if self.__result is not None:
             return True
-        time.sleep(self.poll_period)  # needed to not overwhelm the FuncX server
         try:
             data = FuncXFuture.client.get_task_status(self.task_id)
         except Exception:
             return False
         if 'status' in data and data['status'] == 'PENDING':
+            time.sleep(self.poll_period)  # needed to not overwhelm the FuncX server
             return False
         elif 'result' in data:
             self.__result = FuncXFuture.serializer.deserialize(data['result'])
+            self.returned = time.time()
+            # FIXME AW benchmarking
+            self.connected_managers = os.environ.get('connected_managers', -1)
+
             return True
         elif 'exception' in data:
             e = FuncXFuture.serializer.deserialize(data['exception'])
@@ -77,23 +83,32 @@ class FuncXFuture(Future):
                     if timeout < 0:
                         raise TimeoutError
 
-        return FuncXFuture.client.get_result(self.task_id)
+        return self.__result
 
 
-def get_funcx_future(payload, endpoint, function, poll_period, retries=6, **kwargs):
-    for attempt in range(retries):
-        try:
-            task_id = client.run(
-                *payload,
-                **kwargs,
-                endpoint_id=endpoint,
-                function_id=function_uuids[function]
-            )
-            break
-        except Exception as e:
-            print('encountered exception, will retry: {}'.format(str(e)))
-            time.sleep(5)
+def get_funcx_future(payload, endpoint, function, poll_period, **kwargs):
+    task_id = client.run(
+        *payload,
+        **kwargs,
+        endpoint_id=endpoint,
+        function_id=function_uuids[function]
+    )
     return FuncXFuture(task_id, poll_period)
+
+# def get_funcx_future(payload, endpoint, function, poll_period, retries=6, **kwargs):
+#     for attempt in range(retries):
+#         try:
+#             task_id = client.run(
+#                 *payload,
+#                 **kwargs,
+#                 endpoint_id=endpoint,
+#                 function_id=function_uuids[function]
+#             )
+#             break
+#         except Exception as e:
+#             print('encountered exception, will retry: {}'.format(str(e)))
+#             time.sleep(10)
+#     return FuncXFuture(task_id, function, poll_period)
 
 def get_chunking(filelist, chunksize, endpoints, status=True, timeout=10, poll_period=0.1):
     futures = set()
@@ -110,6 +125,6 @@ def get_chunking(filelist, chunksize, endpoints, status=True, timeout=10, poll_p
         for chunk in chunks:
             total.append((ds, chunk[0], treename, chunk[1], chunk[2]))
 
-    _futures_handler(futures, items, status, 'files', 'Preprocessing', accumulator)
+    _futures_handler(futures, items, status, 'files', 'Preprocessing', accumulator, timeout)
 
     return items

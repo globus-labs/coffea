@@ -4,111 +4,88 @@ from funcx.sdk.client import FuncXClient
 
 from coffea.processor.parsl.timeout import timeout
 
-# @timeout
-def derive_chunks(filename, treename, chunksize, ds, timeout=10):
-# def derive_chunks(filename, treename, chunksize, ds):
-    import uproot
-    from collections.abc import Sequence
 
-    uproot.XRootDSource.defaults["parallel"] = False
-
-    afile = uproot.open(filename)
-
-    tree = None
-    if isinstance(treename, str):
-        tree = afile[treename]
-    elif isinstance(treename, Sequence):
-        for name in reversed(treename):
-            if name in afile:
-                tree = afile[name]
-    else:
-        raise Exception('treename must be a str or Sequence but is a %s!' % repr(type(treename)))
-
-    if tree is None:
-        raise Exception('No tree found, out of possible tree names: %s' % repr(treename))
-
-    nentries = tree.numentries
-    return ds, treename, [(filename, chunksize, index) for index in range(nentries // chunksize + 1)]
-
-# TODO have parsl executor import from here so it is not defined twice
-# @timeout
-def process(dataset, fn, treename, chunksize, index, stageout_url, timeout=None, flatten=True):
+def process(item, stageout_url, timeout=None, **kwargs):
     import os
     import random
     import string
     import subprocess
     from collections.abc import Sequence
 
-    import uproot
-    import cloudpickle as cpkl
-    import pickle as pkl
-    import lz4.frame as lz4f
+    import numpy as np
 
-    from coffea import hist, processor
+    from coffea.processor.executor import _work_function, _compression_wrapper, WorkItem
+    from coffea.processor.accumulator import dict_accumulator
     from coffea.util import load, save
-    from coffea.processor.accumulator import value_accumulator
 
-    uproot.XRootDSource.defaults["parallel"] = False
-
-    lz4_clevel = 16
-
-    # instrument xrootd source
-    if not hasattr(uproot.source.xrootd.XRootDSource, '_read_real'):
-
-        def _read(self, chunkindex):
-            self.bytesread = getattr(self, 'bytesread', 0) + self._chunkbytes
-            return self._read_real(chunkindex)
-
-        uproot.source.xrootd.XRootDSource._read_real = uproot.source.xrootd.XRootDSource._read
-        uproot.source.xrootd.XRootDSource._read = _read
-
-    processor_path = os.path.join(os.environ['FUNCX_TMPDIR'], 'processor')
+    # FIXME multiple processors will clobber eachother
+    processor_path = os.path.join(os.environ['FUNCX_TMPDIR'], 'processor.coffea')
+    # FIXME Commenting out for now so this can be cached;
+    #       we need a way to clear the cache when appropriate
+    # os.unlink(processor_path)
     if not os.path.isfile(processor_path):
-        command = 'xrdcp {}/processor {}'.format(stageout_url, processor_path)
-        subprocess.call(command, shell=True)
-    processor_instance = load(processor_path)
+        command = 'xrdcp {}/processor.coffea {}'.format(stageout_url, processor_path)
+        res = subprocess.call(command, shell=True)
 
-    afile = uproot.open(fn)
-
-    tree = None
-    if isinstance(treename, str):
-        tree = afile[treename]
-    elif isinstance(treename, Sequence):
-        for name in reversed(treename):
-            if name in afile:
-                tree = afile[name]
+    outfile = ''.join(random.choice(string.ascii_lowercase) for i in range(10))
+    subdir = str(np.random.choice(range(100)))
+    if stageout_url.startswith('file://'):
+        result_path = os.path.join(stageout_url.replace('file://', ''), subdir, outfile)
+    elif stageout_url.startswith('root://'):
+        result_path = os.path.join(os.environ['FUNCX_TMPDIR'], outfile)
     else:
-        raise Exception('treename must be a str or Sequence but is a %s!' % repr(type(treename)))
+        raise NotImplementedError('Only file and xrootd stageout supported')
 
-    if tree is None:
-        raise Exception('No tree found, out of possible tree names: %s' % repr(treename))
+    try:
+        processor_instance = load(processor_path)
+        compression = kwargs.pop('compression', 1)
+        if compression is not None:
+            _work_function = _compression_wrapper(compression, _work_function)
+        output = _work_function(
+            WorkItem(*item),
+            processor_instance,
+            **kwargs
+        )
+        save(output, result_path)
+    except Exception as e:
+        result_path += '.err'
 
-    df = processor.LazyDataFrame(tree, chunksize, index, flatten=flatten)
-    df['dataset'] = dataset
+        # # format_string = "%(asctime)s.%(msecs)03d %(name)s:%(lineno)d [%(levelname)s]  %(message)s"
+        # # logger = logging.getLogger(__name__)
+        # # # logger.setLevel(logging.DEBUG)
+        # # handler = logging.FileHandler(result_path)
+        # # # handler.setLevel(logging.DEBUG)
+        # # formatter = logging.Formatter(result_path, datefmt='%Y-%m-%d %H:%M:%S')
+        # # handler.setFormatter(formatter)
+        # # logger.addHandler(handler)
 
-    vals = processor_instance.process(df)
-    if isinstance(afile.source, uproot.source.xrootd.XRootDSource):
-        vals['_bytesread'] = value_accumulator(int) + afile.source.bytesread
-    valsblob = lz4f.compress(pkl.dumps(vals), compression_level=lz4_clevel)
+        # # hostname = subprocess.check_output('hostname', shell=True).strip().decode()
+        # # logger.warn('problem loading processor instance for {} on {}'.format(str(item)), hostname)
+        # # logger.warn('exception encountered: {}'.format(e))
+        # # for key, value in os.environ.items():
+        # #     logger.warn('[environment] {}: {}'.format(key, value))
+
+        with open(result_path, 'w') as f:
+            print('problem loading processor instance for {}'.format(str(item)), file=f)
+            print(e, file=f)
+            print('environment:', file=f)
+            for key, value in os.environ.items():
+                print('{}: {}'.format(key, value), file=f)
+            print('hostname: {}'.format(subprocess.check_output('hostname', shell=True), file=f))
 
 
-    output = os.path.join(
-        os.environ['FUNCX_TMPDIR'],
-        ''.join(random.choice(string.ascii_lowercase) for i in range(10))
-    )
-    save((valsblob, df.size, dataset), output)
+    if stageout_url.startswith('root://'):
+        command = 'xrdcp {} {}'.format(result_path, os.path.join(stageout_url, subdir))
+        subprocess.call(command, shell=True)
+        os.unlink(result_path)
 
-    command = 'xrdcp {} {}'.format(output, stageout_url)
-    subprocess.call(command, shell=True)
-    os.unlink(output)
-
-    return os.path.join(stageout_url, os.path.basename(output))
+    return os.path.join(subdir, os.path.basename(result_path))
 
 client = FuncXClient()
 uuids = {}
-for func in [derive_chunks, process]:
+for func in [process]:
     f = timeout(func)
     uuids[func.__name__] = client.register_function(f)
 
-with open('function_uuids.json', 'w') as f:
+with open('data/function_uuids.json', 'w') as f:
     f.write(json.dumps(uuids, indent=4, sort_keys=True))
