@@ -1,0 +1,27 @@
+Jet
+===
+
+.. currentmodule:: coffea.nanoaod.methods
+
+.. autoclass:: Jet
+   :show-inheritance:
+
+   .. rubric:: Attributes Summary
+
+   .. autosummary::
+
+      ~Jet.LOOSE
+      ~Jet.TIGHT
+      ~Jet.TIGHTLEPVETO
+      ~Jet.isLoose
+      ~Jet.isTight
+      ~Jet.isTightLeptonVeto
+
+   .. rubric:: Attributes Documentation
+
+   .. autoattribute:: LOOSE
+   .. autoattribute:: TIGHT
+   .. autoattribute:: TIGHTLEPVETO
+   .. autoattribute:: isLoose
+   .. autoattribute:: isTight
+   .. autoattribute:: isTightLeptonVeto

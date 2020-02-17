@@ -1,0 +1,15 @@
+<map id="inheritanceb69964a6f5" name="inheritanceb69964a6f5">
+<area shape="rect" id="node13" title="Implements the usual TVector2 methods, storing minimal materialized arrays in polar coordinates" alt="" coords="310,139,366,155"/>
+<area shape="rect" id="node4" title="Implements the usual TLorentzVector methods but also propogates sum of charges" alt="" coords="527,64,581,79"/>
+<area shape="rect" id="node7" title="Embeds all common gen particle and jet cross&#45;references" alt="" coords="613,49,690,64"/>
+<area shape="rect" id="node10" title="NanoAOD visible tau object" alt="" coords="624,79,679,95"/>
+<area shape="rect" id="node5" title="Implements the usual TLorentzVector methods, storing minimal materialized arrays in pt&#45;eta&#45;phi&#45;mass coordinates" alt="" coords="428,109,496,125"/>
+<area shape="rect" id="node8" title="NanoAOD large radius jet object" alt="" coords="532,94,576,109"/>
+<area shape="rect" id="node9" title="NanoAOD generator&#45;level particle object, including parent and child self&#45;references" alt="" coords="525,124,584,139"/>
+<area shape="rect" id="node11" title="NanoAOD narrow radius jet object" alt="" coords="532,154,576,170"/>
+<area shape="rect" id="node6" title="NanoAOD electron object" alt="" coords="719,3,765,19"/>
+<area shape="rect" id="node15" title="NanoAOD muon object" alt="" coords="720,33,764,49"/>
+<area shape="rect" id="node16" title="NanoAOD photon object" alt="" coords="720,64,764,79"/>
+<area shape="rect" id="node17" title="NanoAOD tau object" alt="" coords="720,94,764,109"/>
+<area shape="rect" id="node14" title="Methods: abstract mix&#45;in" alt="" coords="3,155,51,170"/>
+</map>

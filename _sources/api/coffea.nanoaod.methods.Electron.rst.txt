@@ -1,0 +1,25 @@
+Electron
+========
+
+.. currentmodule:: coffea.nanoaod.methods
+
+.. autoclass:: Electron
+   :show-inheritance:
+
+   .. rubric:: Attributes Summary
+
+   .. autosummary::
+
+      ~Electron.FAIL
+      ~Electron.LOOSE
+      ~Electron.MEDIUM
+      ~Electron.TIGHT
+      ~Electron.VETO
+
+   .. rubric:: Attributes Documentation
+
+   .. autoattribute:: FAIL
+   .. autoattribute:: LOOSE
+   .. autoattribute:: MEDIUM
+   .. autoattribute:: TIGHT
+   .. autoattribute:: VETO
