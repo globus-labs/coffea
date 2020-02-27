@@ -743,18 +743,8 @@ def run_uproot_job(fileset,
                 'tailtimeout': None,
                 'worker_affinity': False,
             }
-<<<<<<< HEAD
             pre_args.update(pre_arg_override)
-            executor(to_get, metadata_fetcher, out, **pre_args)
-=======
-            real_pre_args.update(pre_args)
-            partial_meta = partial(_get_metadata,
-                                   skipbadfiles=skipbadfiles,
-                                   retries=retries,
-                                   xrootdtimeout=xrootdtimeout,
-                                   )
-            pre_executor(to_get, partial_meta, out, **real_pre_args)
->>>>>>> WIP
+            pre_executor(to_get, metadata_fetcher, out, **pre_args)
             while out:
                 item = out.pop()
                 metadata_cache[item] = item.metadata

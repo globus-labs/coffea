@@ -8,11 +8,12 @@ from concurrent.futures import Future
 import multiprocessing
 from itertools import cycle
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
+
+from globus_sdk.exc import GlobusAPIError
 
 from funcx.sdk.client import FuncXClient
 from funcx.serialize import FuncXSerializer
-
 
 from parsl.providers import LocalProvider
 from parsl.channels import LocalChannel
@@ -82,6 +83,76 @@ class FuncXFuture(Future):
                     timeout -= self.poll_period
                     if timeout < 0:
                         raise TimeoutError
+
+        return self.__result
+
+class MappedFuncXFuture(Future):
+    client = FuncXClient(funcx_service_address='https://dev.funcx.org/api/v1')
+
+    def __init__(self, task_ids, accumulate=None, poll_period=2, progress_bar=True, retries=6):
+        super().__init__()
+        self.pending_task_ids = task_ids
+        self.completed_task_ids = []
+        self.poll_period = poll_period
+        self.__result = None
+        self.submitted = time.time()
+        self.status = None
+        self.progress_bar = progress_bar
+        self.retries = retries
+
+        if accumulate is None:
+            def accumulate(accumulated_result, result):
+                if accumulated_result is None:
+                    return [result]
+                return accumulated_result + [result]
+
+        self.accumulate = accumulate
+
+    def done(self):
+        if len(self.pending_task_ids) == 0:
+            return True
+
+        for attempt in range(self.retries):
+            try:
+                self.status = MappedFuncXFuture.client.get_batch_status(self.pending_task_ids)
+                break
+            except GlobusAPIError:
+                print('Encountered GlobusAPIError-- will retry ({} attempts remaining)'.format(self.retries - attempt - 1)
+                time.sleep(self.poll_period)
+        completed = [t for t in self.status.keys() if t in self.status and not self.status[t]['pending']]
+        if len(completed) == len(self.pending_task_ids):
+            return True
+        return False
+
+    def result(self, timeout=None):
+        start = time.time()
+        if self.progress_bar:
+            pbar = tqdm(unit='task', total=len(self.pending_task_ids + self.completed_task_ids))
+
+        while True:
+            if self.done():
+                break
+            else:
+                for task_id, data in self.status.items():
+                    if self.progress_bar:
+                        pbar.update(1)
+                    self.pending_task_ids.remove(task_id)
+                    self.completed_task_ids += [task_id]
+                    self.__result = self.accumulate(self.__result, data['result'])
+
+                time.sleep(self.poll_period)
+                if timeout is not None:
+                    time_elapsed = time.time() - start
+                    if time_elapsed > timeout:
+                        raise TimeoutError
+
+        if len(self.pending_task_ids) > 0:
+            for task_id, data in self.status.items():
+                if self.progress_bar:
+                    pbar.update(1)
+                self.pending_task_ids.remove(task_id)
+                self.completed_task_ids += [task_id]
+                self.__result = self.accumulate(self.__result, data['result'])
 
         return self.__result
 
