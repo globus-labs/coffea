@@ -180,31 +180,19 @@ def _cancel(job):
     except NotImplementedError:
         pass
 
-
 def _futures_handler(futures_set, output, status, unit, desc, add_fn, tailtimeout):
     start = time.time()
     last_job = start
     try:
-        futures_set = set(list(futures_set))
         with tqdm(disable=not status, unit=unit, total=len(futures_set), desc=desc) as pbar:
             while len(futures_set) > 0:
-                # needed for funcX, because polling period is slow
-                finished = set()
-                for job in futures_set:
-                    if job.done():
-                        finished.add(job)
-                    if len(finished) > 10:
-                        break
-                # finished = set(job for job in futures_set if job.done())
+                finished = set(job for job in futures_set if job.done())
                 futures_set.difference_update(finished)
                 while finished:
-                    # FIXME AW benchmarking
-                    f = finished.pop()
-                    add_fn(output, (f.result(), f.submitted, f.returned, f.connected_managers))
-                    # add_fn(output, finished.pop().result())
+                    add_fn(output, finished.pop().result())
                     pbar.update(1)
                     last_job = time.time()
-                # time.sleep(0.5)
+                time.sleep(0.5)
                 if tailtimeout is not None and (time.time() - last_job) > tailtimeout and (last_job - start) > 0:
                     njobs = len(futures_set)
                     for job in futures_set:
@@ -223,6 +211,51 @@ def _futures_handler(futures_set, output, status, unit, desc, add_fn, tailtimeou
         for job in futures_set:
             _cancel(job)
         raise
+# def _futures_handler(futures_set, output, status, unit, desc, add_fn, tailtimeout):
+#     start = time.time()
+#     last_job = start
+#     try:
+#         futures_set = set(list(futures_set))
+#         with tqdm(disable=not status, unit=unit, total=len(futures_set), desc=desc) as pbar:
+#             while len(futures_set) > 0:
+#                 # needed for funcX, because polling period is slow
+#                 finished = set()
+#                 for job in futures_set:
+#                     if job.done():
+#                         finished.add(job)
+#                     if len(finished) > 10:
+#                         break
+#                 # finished = set(job for job in futures_set if job.done())
+#                 futures_set.difference_update(finished)
+#                 while finished:
+#                     # FIXME AW benchmarking
+#                     f = finished.pop()
+#                     try:
+#                         add_fn(output, (f.result(), f.submitted, f.returned, f.connected_managers))
+#                     except AttributeError:
+#                         add_fn(output, f.result())
+#                     # add_fn(output, finished.pop().result())
+#                     pbar.update(1)
+#                     last_job = time.time()
+#                 # time.sleep(0.5)
+#                 if tailtimeout is not None and (time.time() - last_job) > tailtimeout and (last_job - start) > 0:
+#                     njobs = len(futures_set)
+#                     for job in futures_set:
+#                         _cancel(job)
+#                         pbar.update(1)
+#                     import warnings
+#                     warnings.warn('Stopped {} jobs early due to tailtimeout = {}'.format(njobs, tailtimeout))
+#                     break
+#     except KeyboardInterrupt:
+#         for job in futures_set:
+#             _cancel(job)
+#         if status:
+#             print("Received SIGINT, killed pending jobs.  Running jobs will continue to completion.", file=sys.stderr)
+#             print("Running jobs:", sum(1 for j in futures_set if j.running()), file=sys.stderr)
+#     except Exception:
+#         for job in futures_set:
+#             _cancel(job)
+#         raise
 
 
 def iterative_executor(items, function, accumulator, **kwargs):
@@ -898,7 +931,8 @@ def run_funcx_job(endpoints, fileset, treename, processor, executor, stageout_ur
 
 def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=None,
         local_path=None, status=True, unit='items', desc='Processing', compression=1, tailtimeout=None,
-        poll_period=0.1, submission_retries=3, jitter_interval=200, **kwargs):
+        tasktimeout=None, poll_period=0.1, submission_retries=3, batch_size=5000,
+        funcx_service_address='https://funcx.org/api/v1', **kwargs):
     """Execute using funcX
 
     Parameters
@@ -918,9 +952,13 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
         compression : int, optional
             Compress accumulator outputs in flight with LZ4, at level specified (default 1)
             Set to ``None`` for no compression.
+        timeout : int, optional
+            Max runtime per task.
         tailtimeout : int, optional
             Timeout requirement on job tails. Cancel all remaining jobs if none have finished
             in the timeout window.
+        batch_size : int, optional
+            Maximum number of tasks to submit per batch to the funcX server
     """
     if len(items) == 0:
         return accumulator
@@ -930,13 +968,16 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
     from itertools import cycle
     import numpy as np
 
-    from coffea.processor.funcx.detail import get_funcx_future
+    from coffea.processor.funcx.detail import MappedFuncXFuture
+    from coffea.processor.accumulator import AccumulatorABC
 
     try:
         import funcx
+        from funcx.sdk.client import FuncXClient
     except ImportError as e:
         print('you must have funcx installed to call run_funcx_job()!')
         raise e
+    client = FuncXClient(funcx_service_address=funcx_service_address)
 
     print('funcx version:', funcx.__version__)
 
@@ -978,7 +1019,11 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
         os.makedirs(os.path.join(local_path, str(i)), exist_ok=True)
 
     def add_fn(output, result):
-        result, submitted, returned, connected_managers = result # FIXME AW benchmarking
+        # if isinstance(result, AccumulatorABC):
+        #     output += _maybe_decompress(result)
+        #     return
+
+        # result, submitted, returned, connected_managers = result # FIXME AW benchmarking
         if local_path is not None:
             path = os.path.join(local_path, result)
             if path.endswith('.err'):
@@ -1012,30 +1057,55 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
         else:
             raise NotImplementedError
 
-        output += _maybe_decompress(result)
+        try:
+            output += _maybe_decompress(result)
+        except Exception as e:
+            print(e)
+            print('encountered error')
+            print('result ', _maybe_decompress(result))
+            print('output ', output)
+
+        return output
 
     futures = set()
     endpoint = cycle(endpoints)
 
+    with open(os.path.join(os.path.dirname(__file__), 'funcx', 'data', 'function_uuids.json')) as f:
+        function_uuids = json.load(f)
+
     from datetime import datetime
     print('[{}] starting submission'.format(datetime.now().strftime("%H:%M:%S")))
-    for index, item in enumerate(items):
-        if index % jitter_interval == 0:
-            time.sleep(np.random.uniform(0.1, 2))
-        payload = [
-            (item.dataset, item.filename, item.treename, item.chunksize, item.index),
-            stageout_url
-        ]
+
+    args = [
+        [(item.dataset, item.filename, item.treename, item.entrystart, item.entrystop, item.fileuuid), stageout_url]
+        for item in items
+    ]
+    batched_args = [args[i:i + batch_size] for i in range(0, len(args), batch_size)]
+    for batch in batched_args:
         for _ in range(submission_retries):
             try:
-                futures.add(get_funcx_future(payload, next(endpoint), 'process', poll_period, **kwargs))
+                print('submitting batch of {} tasks'.format(len(batch)))
+                futures.add(
+                    MappedFuncXFuture(
+                        client.map_run(
+                            batch,
+                            endpoint_id=next(endpoint),
+                            function_id=function_uuids['process'],
+                            **kwargs
+                        ),
+                        accumulator=accumulator,
+                        accumulate=add_fn,
+                        poll_period=poll_period
+                    )
+                )
                 break
             except Exception as e:
                 print('caught exception: {}'.format(e))
-                time.sleep(6)
+                time.sleep(poll_period)
 
     print('[{}] finished submission'.format(datetime.now().strftime("%H:%M:%S")))
-    _futures_handler(futures, accumulator, status, unit, desc, add_fn, tailtimeout)
+    [f.result() for f in futures]
+    # _futures_handler(futures, accumulator, status, unit, desc, add_fn, tailtimeout)
 
     # db = sqlite3.connect('coffea.db')
     # db.executemany("""insert into tasks(

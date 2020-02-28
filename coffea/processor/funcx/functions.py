@@ -5,7 +5,9 @@ from funcx.sdk.client import FuncXClient
 from coffea.processor.parsl.timeout import timeout
 
 
-def process(item, stageout_url, timeout=None, **kwargs):
+def process(inputs, **kwargs):
+    (item, stageout_url) = inputs  # funcX batching only supports single args at the moment
+
     import os
     import random
     import string
@@ -49,21 +51,6 @@ def process(item, stageout_url, timeout=None, **kwargs):
         save(output, result_path)
     except Exception as e:
         result_path += '.err'
-
-        # # format_string = "%(asctime)s.%(msecs)03d %(name)s:%(lineno)d [%(levelname)s]  %(message)s"
-        # # logger = logging.getLogger(__name__)
-        # # # logger.setLevel(logging.DEBUG)
-        # # handler = logging.FileHandler(result_path)
-        # # # handler.setLevel(logging.DEBUG)
-        # # formatter = logging.Formatter(result_path, datefmt='%Y-%m-%d %H:%M:%S')
-        # # handler.setFormatter(formatter)
-        # # logger.addHandler(handler)
-
-        # # hostname = subprocess.check_output('hostname', shell=True).strip().decode()
-        # # logger.warn('problem loading processor instance for {} on {}'.format(str(item)), hostname)
-        # # logger.warn('exception encountered: {}'.format(e))
-        # # for key, value in os.environ.items():
-        # #     logger.warn('[environment] {}: {}'.format(key, value))
 
         with open(result_path, 'w') as f:
             print('problem loading processor instance for {}'.format(str(item)), file=f)
