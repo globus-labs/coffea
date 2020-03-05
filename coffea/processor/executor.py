@@ -211,6 +211,7 @@ def _futures_handler(futures_set, output, status, unit, desc, add_fn, tailtimeou
         for job in futures_set:
             _cancel(job)
         raise
+
 # def _futures_handler(futures_set, output, status, unit, desc, add_fn, tailtimeout):
 #     start = time.time()
 #     last_job = start
@@ -931,7 +932,7 @@ def run_funcx_job(endpoints, fileset, treename, processor, executor, stageout_ur
 
 def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=None,
         local_path=None, status=True, unit='items', desc='Processing', compression=1, tailtimeout=None,
-        tasktimeout=None, poll_period=0.1, submission_retries=3, batch_size=5000,
+        tasktimeout=None, tailretry=None, poll_period=0.1, client_retries=6, batch_size=5000,
         funcx_service_address='https://funcx.org/api/v1', **kwargs):
     """Execute using funcX
 
@@ -967,6 +968,7 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
     import subprocess
     from itertools import cycle
     import numpy as np
+    import random
 
     from coffea.processor.funcx.detail import MappedFuncXFuture
     from coffea.processor.accumulator import AccumulatorABC
@@ -1019,9 +1021,9 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
         os.makedirs(os.path.join(local_path, str(i)), exist_ok=True)
 
     def add_fn(output, result):
-        # if isinstance(result, AccumulatorABC):
-        #     output += _maybe_decompress(result)
-        #     return
+        if isinstance(result, AccumulatorABC):
+            output += _maybe_decompress(result)
+            return
 
         # result, submitted, returned, connected_managers = result # FIXME AW benchmarking
         if local_path is not None:
@@ -1030,7 +1032,8 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
                 print('skipping error file: {}'.format(path))
                 return
             try:
-                result = load(path)
+                # result = load(path)
+
                 # FIXME AW benchmarking
                 # result = _maybe_decompress(result)
                 # update += [
@@ -1057,13 +1060,13 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
         else:
             raise NotImplementedError
 
-        try:
-            output += _maybe_decompress(result)
-        except Exception as e:
-            print(e)
-            print('encountered error')
-            print('result ', _maybe_decompress(result))
-            print('output ', output)
+        # try:
+        #     output += _maybe_decompress(result)
+        # except Exception as e:
+        #     print(e)
+        #     print('encountered error')
+        #     print('result ', _maybe_decompress(result))
+        #     print('output ', output)
 
         return output
 
@@ -1080,31 +1083,26 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
         [(item.dataset, item.filename, item.treename, item.entrystart, item.entrystop, item.fileuuid), stageout_url]
         for item in items
     ]
+    random.shuffle(args)
+    # args = args * 4
     batched_args = [args[i:i + batch_size] for i in range(0, len(args), batch_size)]
     for batch in batched_args:
-        for _ in range(submission_retries):
-            try:
-                print('submitting batch of {} tasks'.format(len(batch)))
-                futures.add(
-                    MappedFuncXFuture(
-                        client.map_run(
-                            batch,
-                            endpoint_id=next(endpoint),
-                            function_id=function_uuids['process'],
-                            **kwargs
-                        ),
-                        accumulator=accumulator,
-                        accumulate=add_fn,
-                        poll_period=poll_period
-                    )
-                )
-                break
-            except Exception as e:
-                print('caught exception: {}'.format(e))
-                time.sleep(poll_period)
+        print('submitting batch of {} tasks'.format(len(batch)))
+        futures.add(
+            MappedFuncXFuture(
+                batch,
+                next(endpoint),
+                function_uuids['process'],
+                accumulator=accumulator,
+                accumulate=add_fn,
+                poll_period=poll_period,
+                client_retries=client_retries,
+                **kwargs
+            )
+        )
 
     print('[{}] finished submission'.format(datetime.now().strftime("%H:%M:%S")))
-    [f.result() for f in futures]
+    [f.result(tailtimeout=tailtimeout, tailretry=tailretry) for f in futures]
     # _futures_handler(futures, accumulator, status, unit, desc, add_fn, tailtimeout)
 
     # db = sqlite3.connect('coffea.db')
