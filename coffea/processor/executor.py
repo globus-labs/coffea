@@ -941,7 +941,8 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
         items : list
             List of input arguments
         function : callable
-            A function to be called on each input, which returns an accumulator instance
+            A function to be called on each input, which returns an accumulator instance.
+            Note that currently only `_work_functioon` is supported.
         accumulator : AccumulatorABC
             An accumulator to collect the output of the function
         status : bool
@@ -1030,9 +1031,9 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
             path = os.path.join(local_path, result)
             if path.endswith('.err'):
                 print('skipping error file: {}'.format(path))
-                return
+                return output
             try:
-                # result = load(path)
+                result = load(path)
 
                 # FIXME AW benchmarking
                 # result = _maybe_decompress(result)
@@ -1050,23 +1051,23 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
                 os.unlink(path)
             except FileNotFoundError:
                 print('could not find output for {}-- skipping it'.format(path))
-                return
+                return output
             except EOFError:
                 print('caught EOFError for {}-- skipping it'.format(path))
-                return
+                return output
             except OSError:
                 print('caught OSError for {}-- skipping it'.format(path))
-                return
+                return output
         else:
             raise NotImplementedError
 
-        # try:
-        #     output += _maybe_decompress(result)
-        # except Exception as e:
-        #     print(e)
-        #     print('encountered error')
-        #     print('result ', _maybe_decompress(result))
-        #     print('output ', output)
+        try:
+            output += _maybe_decompress(result)
+        except Exception as e:
+            print(e)
+            print('encountered error')
+            print('result ', _maybe_decompress(result))
+            print('output ', output)
 
         return output
 
@@ -1086,6 +1087,7 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
     random.shuffle(args)
     # args = args * 4
     batched_args = [args[i:i + batch_size] for i in range(0, len(args), batch_size)]
+    # FIXME for large batches tasks won't be distributed across EPs
     for batch in batched_args:
         print('submitting batch of {} tasks'.format(len(batch)))
         futures.add(

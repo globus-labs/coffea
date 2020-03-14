@@ -224,6 +224,7 @@ class MappedFuncXFuture(Future):
                 print('{} tasks failed'.format(len(self.failed_tasks)))
                 for t, data in self.failed_tasks:
                     print('{}: {}'.format(self.args[t], data))
+                    data['exception'].reraise()
 
             if len(self.manager_lost_task_ids) > 0:
                 print('{} tasks were resubmitted due to a lost manager'.format(len(self.manager_lost_task_ids)))
