@@ -212,52 +212,6 @@ def _futures_handler(futures_set, output, status, unit, desc, add_fn, tailtimeou
             _cancel(job)
         raise
 
-# def _futures_handler(futures_set, output, status, unit, desc, add_fn, tailtimeout):
-#     start = time.time()
-#     last_job = start
-#     try:
-#         futures_set = set(list(futures_set))
-#         with tqdm(disable=not status, unit=unit, total=len(futures_set), desc=desc) as pbar:
-#             while len(futures_set) > 0:
-#                 # needed for funcX, because polling period is slow
-#                 finished = set()
-#                 for job in futures_set:
-#                     if job.done():
-#                         finished.add(job)
-#                     if len(finished) > 10:
-#                         break
-#                 # finished = set(job for job in futures_set if job.done())
-#                 futures_set.difference_update(finished)
-#                 while finished:
-#                     # FIXME AW benchmarking
-#                     f = finished.pop()
-#                     try:
-#                         add_fn(output, (f.result(), f.submitted, f.returned, f.connected_managers))
-#                     except AttributeError:
-#                         add_fn(output, f.result())
-#                     # add_fn(output, finished.pop().result())
-#                     pbar.update(1)
-#                     last_job = time.time()
-#                 # time.sleep(0.5)
-#                 if tailtimeout is not None and (time.time() - last_job) > tailtimeout and (last_job - start) > 0:
-#                     njobs = len(futures_set)
-#                     for job in futures_set:
-#                         _cancel(job)
-#                         pbar.update(1)
-#                     import warnings
-#                     warnings.warn('Stopped {} jobs early due to tailtimeout = {}'.format(njobs, tailtimeout))
-#                     break
-#     except KeyboardInterrupt:
-#         for job in futures_set:
-#             _cancel(job)
-#         if status:
-#             print("Received SIGINT, killed pending jobs.  Running jobs will continue to completion.", file=sys.stderr)
-#             print("Running jobs:", sum(1 for j in futures_set if j.running()), file=sys.stderr)
-#     except Exception:
-#         for job in futures_set:
-#             _cancel(job)
-#         raise
-
 
 def iterative_executor(items, function, accumulator, **kwargs):
     """Execute in one thread iteratively
@@ -575,10 +529,6 @@ def _work_function(item, processor_instance, flatten=False, savemetrics=False,
                 metrics['columns'] = set_accumulator(df.materialized)
                 metrics['entries'] = value_accumulator(int, df.size)
                 metrics['processtime'] = value_accumulator(float, toc - tic)
-                # FIXME AW benchmarking
-                # import subprocess
-                # hostname = subprocess.check_output('hostname', shell=True).strip().decode()
-                # metrics['hostname'] = dict_accumulator({hostname: value_accumulator(int, 1)})
             wrapped_out = dict_accumulator({'out': out, 'metrics': metrics})
             file.source.close()
             break
@@ -984,22 +934,6 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
 
     print('funcx version:', funcx.__version__)
 
-    # FIXME AW benchmarking
-    import sqlite3
-    db = sqlite3.connect('coffea.db')
-    db.execute("""create table if not exists tasks(
-        tag text,
-        returned int,
-        submitted int,
-        added int,
-        task_id int,
-        connected_managers int,
-        entries int,
-        hostname text,
-        processtime real,
-        concurrent_analyses int
-        )""")
-    db.close()
     kwargs = function.keywords
     processor_instance = kwargs.pop('processor_instance')
 
@@ -1026,7 +960,6 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
             output += _maybe_decompress(result)
             return
 
-        # result, submitted, returned, connected_managers = result # FIXME AW benchmarking
         if local_path is not None:
             path = os.path.join(local_path, result)
             if path.endswith('.err'):
@@ -1035,19 +968,6 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
             try:
                 result = load(path)
 
-                # FIXME AW benchmarking
-                # result = _maybe_decompress(result)
-                # update += [
-                #     (os.environ.get('tag', 'coffea'),
-                #     returned,
-                #     submitted,
-                #     connected_managers,
-                #     result['metrics']['entries'].value,
-                #     result['metrics']['hostname'],
-                #     result['metrics']['processtime'].value,
-                #     os.environ.get('concurrent_analyses', 1),
-                #     time.time())
-                # ]
                 os.unlink(path)
             except FileNotFoundError:
                 print('could not find output for {}-- skipping it'.format(path))
@@ -1085,7 +1005,6 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
         for item in items
     ]
     random.shuffle(args)
-    # args = args * 4
     batched_args = [args[i:i + batch_size] for i in range(0, len(args), batch_size)]
     # FIXME for large batches tasks won't be distributed across EPs
     for batch in batched_args:
@@ -1105,22 +1024,6 @@ def funcx_executor(items, function, accumulator, endpoints=None, stageout_url=No
 
     print('[{}] finished submission'.format(datetime.now().strftime("%H:%M:%S")))
     [f.result(tailtimeout=tailtimeout, tailretry=tailretry) for f in futures]
-    # _futures_handler(futures, accumulator, status, unit, desc, add_fn, tailtimeout)
-
-    # db = sqlite3.connect('coffea.db')
-    # db.executemany("""insert into tasks(
-    #     tag,
-    #     returned,
-    #     submitted,
-    #     connected_managers,
-    #     entries,
-    #     processtime,
-    #     concurrent_analyses,
-    #     added
-    #     )
-    #     values (?, ?, ?, ?, ?, ?, ?, ?)""", update)
-    # db.commit()
-    # db.close()
 
     return accumulator
 

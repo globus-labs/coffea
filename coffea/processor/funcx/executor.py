@@ -73,10 +73,6 @@ class FuncXExecutor(object):
             total[1][dataset] += nevents
             total[0].add(pkl.loads(lz4f.decompress(blob)))
 
-            # FIXME fails, perhaps auth error?
-            # command = 'xrdfs rm {}'.format(result)
-            # subprocess.call(command, shell=True)
-
         _futures_handler(futures, (output, self._counts), status, unit, desc, accumulator, timeout)
 
 

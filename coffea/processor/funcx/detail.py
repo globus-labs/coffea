@@ -132,6 +132,7 @@ class MappedFuncXFuture(Future):
                     function_id=self.function_id,
                     **self.kwargs
                 )
+                print('submitted {} tasks; task ids are: {}'.format(len(task_ids), ', '.join(task_ids)))
                 break
             except GlobusAPIError as e:
                 time.sleep(self.poll_period)
@@ -149,7 +150,9 @@ class MappedFuncXFuture(Future):
 
         for _ in range(self.retries):
             try:
+                print('getting status for tasks: {}'.format(', '.join(self.pending_task_ids)))
                 self.status = MappedFuncXFuture.client.get_batch_status(self.pending_task_ids)
+                print(self.status)
                 break
             except GlobusAPIError:
                 time.sleep(self.poll_period)
@@ -184,7 +187,7 @@ class MappedFuncXFuture(Future):
                         len(self.pending_task_ids), tailtimeout)
                     )
                     for task_id in self.pending_task_ids:
-                        print(self.args[task_id])
+                        print(task_id, self.args[task_id])
                     break
                 else:
                     manager_lost_task_ids = []
